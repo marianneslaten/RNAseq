@@ -1,0 +1,180 @@
+---
+title: "Analyzing SSP Development Project Read Counts from Salmon"
+author: "Marianne Slaten"
+date: "6/19/2020"
+output: html_document
+---
+
+
+```{r}
+#https://bioconductor.org/packages/devel/bioc/vignettes/tximport/inst/doc/tximport.html
+
+#https://github.com/mmabry/Brassica-oleracea-Population-and-Phylogenetics#14-salmon-httpscombine-labgithubiosalmongetting_started
+```
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager") #only the first time
+#install.packages("jsonlite") #only the first time
+#install.packages("plyr", lib="~/Rlib/") #only the first time
+#install.packages("ggplot2") #only the first time
+library(ggplot2)
+#install.packages("Hmisc") #only the first time
+#BiocManager::install("DESeq2") #only the first time
+library(DESeq2)
+#BiocManager::install("tximport") #only the first time
+library(tximport)
+#install.packages("RColorBrewer") #only the first time
+library(RColorBrewer)
+#BiocManager::install("apeglm")
+library(apeglm)
+#BiocManager::install("limma")
+library(limma)
+library(readxl)
+```
+
+```{r}
+
+#Col0
+samples <- read_excel("/home/memery/data/Developmental_SSP_mutants/docs/SSP_developmental_project_sample_info_05222020.xlsx", sheet="Col0")
+
+samples <- as.data.frame(samples)
+
+samples <- samples[!is.na(samples[, 1]), ]
+
+samples$Round <- as.factor(samples$Round)
+samples$DAF <- as.factor(samples$DAF)
+
+#save sample names
+XX <- samples$Quant_directory
+
+files <- file.path("/home/memery/data/Developmental_SSP_mutants/results/salmon_out/quants", samples$Quant_directory, "quant.sf")
+
+trans2gene <- read.csv("/home/memery/data/Developmental_SSP_mutants/data/trans2gene.csv", header=TRUE)
+
+txi <- tximport(files, type = "salmon", tx2gene = trans2gene)
+#set samples names in counts table
+colnames(txi$counts) <- (XX)
+
+#save a table of counts per sample
+#write.csv(txi$counts, "/home/memery/data/Developmental_SSP_mutants/results/salmon_out/txi_Col0.csv") 
+
+
+```
+
+Import counts using tximport
+```{r}
+
+#import counts using tximport
+dds <- DESeqDataSetFromTximport(txi, colData = samples, design = ~Round+DAF)
+
+#keep genes with >5 reads
+keep <- rowSums(counts(dds)) >= 5
+
+#GENES expressed in each sample (wth more than 5 reads)
+table(keep)
+
+dds <- dds[keep,]
+
+```
+
+
+Visualize library size
+```{r}
+#READS in each sample
+colSums(counts(dds)) 
+
+assays(dds)$counts
+
+#open jpeg
+jpeg('Col0_filtered_read_count.jpg')
+
+#visualize count dist
+boxplot(assay(dds),  
+     srt = 90,
+     cex = 1.2, xpd = TRUE)
+
+
+dev.off()
+
+
+#boxplot(log10(assay(dds)))
+
+
+#save this normalized data matrix 
+#write.table(assays(dds)$counts, file="/home/memery/data/Developmental_SSP_mutants/results/salmon_out/filtered_counts_Col0.txt", sep="\t", quote=F, col.names=NA)
+
+```
+
+Normalize and visualize
+```{r}
+##See below to make sure this is correct
+# Get log2 counts
+vsd <- vst(dds,blind=TRUE)
+
+#open jpeg
+jpeg('Col0_filtered_normalized_read_count.jpg')
+
+# Check distributions of samples using boxplots
+boxplot(assay(vsd), xlab="", ylab="Log2 counts per million",las=2,main="Col0 Normalised Distributions")
+# Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(assay(vsd)), col="blue")
+
+dev.off()
+
+#apply the dist function to the transpose of the transformed count matrix to get sample-to-sample distances.
+sampleDists <- dist(t(assay(vsd)))
+
+
+```
+
+Heatmap of distance matrix
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(colData(dds)$Sample)
+                                    #colData(dds)$Status, sep="-")
+colnames(sampleDistMatrix) <- colData(dds)$Name
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         col=colors)
+```
+
+PCA
+```{r}
+plotPCA(vsd,intgroup="CellType")
+```
+
+
+FPKM
+```{r}
+#https://sbc.shef.ac.uk/workshops/2019-01-14-rna-seq-r/rna-seq-preprocessing.nb.html
+fpkm <- fpkm(dds)
+write.csv(fpkm, file="fpkm_values.csv",quote=FALSE)
+
+write.table(fpkm, file="/home/memery/data/Developmental_SSP_mutants/results/salmon_out/fpkm_filtered_counts_Col0.txt", sep="\t", quote=F, col.names=NA)
+
+
+```
+
+
+
+
+
+Correct for library size using vst
+#depending on downstream analysis-- this may not be a good idea
+```{r}
+
+dds <- estimateSizeFactors(dds)  #correcting for library size (vst used instead of rlog because library sizes are same-- both produce log2 data)
+
+dds_vst <- vst(dds) #normalized with respect to library size or other normalization factors.
+
+#can use these values for DEG analysis
+
+```
+
+
+
+
