@@ -1,0 +1,1083 @@
+---
+title: "SSP Development DGE analysis"
+author: "Marianne Emery"
+date: "10/30/2020"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+### **SSP Developmental Project**
+
+This R script is for differential gene expression analysis (DGE) using Bioconductor package EdgeR.
+
+This R script is adapted from the following resources:
+
+EdgeR user guide: https://www.bioconductor.org/packages/release/bioc/vignettes/edgeR/inst/doc/edgeRUsersGuide.pdf
+
+https://f1000research.com/articles/5-1438
+
+
+The reads counts were generated using STAR --quantmode
+Only uniquely mapping counts are counted
+https://htseq.readthedocs.io/en/release_0.11.1/count.html.
+
+
+```{r}
+rm(list=ls())
+library(readxl)
+library(edgeR)
+
+```
+
+
+Read in samples/counts
+```{r}
+#experimental design info
+samples <- read_excel("~/Desktop/Ath_1001/SSP_Developmental/doc/RNAseq/SSP_developmental_project_sample_info_05222020.xlsx", sheet="ALL")
+
+#count files from STAR output
+#each file contains the counts assuming (2) unstranded, (3) stranded forward and (4) stranded reverse in separate columns
+
+#NOTE: the first 4 lines of the original files have been deleted
+#if these lines have been deleted run the following:
+#1 
+ #noint <- rownames(counts) %in% c("no_feature", "ambiguous", "too_low_aQual", "not_aligned", "alignment_not_unique")
+  #cpms <- cpm(counts)
+  #keep <- rowSums (cpms) >10 & !noint
+#2
+#can use the star_to_mat function
+#https://github.com/vari-bbc/bbcRNA/blob/master/README.md
+#library(bbcRNA)
+#star_to_mat("/Volumes/Seagate Backup Plus Drive/SSP_Dev_read_counts_STAR", "^[^][^_]", 3, #rm_ens_vers = FALSE)
+
+
+counts <- readDGE(samples$Filename, path ="/Volumes/Seagate Backup Plus Drive/SSP_Dev_read_counts_STAR_copy-2", columns=c(1,4), group = samples$DAF, header = FALSE)
+
+
+
+##consider removing cholorphyll and mitochondria genes
+
+
+
+```
+
+
+```{r}
+
+Genotype <- factor(samples$Genotype)
+#make Col0 reference level
+#geno <- relevel (geno, ref = "Col0")
+DAF <- factor(samples$DAF)
+rep <- factor(samples$Round)
+
+
+colnames(counts) <- samples$Sample_name
+
+Group <- factor(paste(samples$Genotype, samples$DAF, sep="."))
+cbind(samples, Group=Group)
+
+head(counts$samples)
+
+
+
+#Each  DAF for each genotype is a group
+design <- model.matrix(~0+Group)
+colnames(design) <- levels(Group)
+
+
+
+```
+
+Filtering to remove low counts
+```{r}
+#Base filtering on count per-million (CPM) values so as to avoid favoring genes that are expressed in larger libraries over those expressed in smaller libraries
+#here the cutoff 0.2 is chosen because it = 10/L where L is the minimum library size (~50 million)
+#the requirement >=3 libraries is because each group contains 3 reps (i.e. rounds)
+#keep <- rowSums(cpm(counts) > 0.2) >= 3
+# TRUE 
+#20067 
+
+keep <- filterByExpr(counts, group = Genotype)
+table(keep)
+#FALSE  TRUE 
+#13209 20401 
+
+
+#keep <- filterByExpr(counts)
+#FALSE  TRUE 
+#  540 22148 
+  
+
+
+#subset DGEList object to retain only non-filtered genes
+#keep.lib.sizez=FALSE becasue the library size to be recomputed after filtering
+counts <- counts[keep, , keep.lib.sizes=FALSE]
+
+counts
+
+```
+
+Normalization for composition bias
+```{r}
+#TMM normalization
+#Estimate normalization factor, this is the normalization for the library size, namely, sequencing depth.
+#this eliminates composition biases between libraries
+#the product of these factors and the library size defines the effective library size
+counts <- calcNormFactors(counts)
+
+#To view the DGElist object
+counts$samples
+
+#counts
+
+#NOTE: a normalization factor below one indicates that a small number of high count genes are monopolizing the sequencing
+
+
+#output filtered, normalized data
+#test2 <- counts$counts
+
+#write.csv(test, "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/STAR_out_Col0CRURNAi_counts_rawTEST2.csv", row.names = T)
+```
+ 
+Output CPM data for additional analyses
+```{r}
+# log2 normalized CPM values
+#use these for heatmaps and clustering analyses
+
+#counts_cpm_log <- cpm(counts, log=TRUE)
+
+#write.csv(counts_cpm_log, "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/STAR_out_counts_cpm_log.csv", row.names = T)
+
+
+counts_cpm_log <- cpm(counts, log=FALSE)
+
+#write.csv(counts_cpm_log, "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/STAR_out_counts_cpm.csv", row.names = T)
+
+```
+
+ 
+ 
+ 
+ 
+Exploring differences between libraries
+Inspect relationships between samples using MDS plot.
+```{r}
+#pdf(file = "Name.pdf", width = 9, height = 6)
+
+
+#????not working
+#plotMDS(counts, main = "MDS plot: All Geno x All DAF", col = factor(stringr::str_extract(rownames(counts$samples), "[_]")), pch = factor(stringr::str_extract(rownames(counts$samples), "DAF")))
+
+
+pch <- c(0,1,2,15,16,17)
+colors <- rep(c("darkgreen", "red", "blue"), 2)
+plotMDS(counts, col=colors[Group], pch=pch[Group]) 
+#-----> figure out how to make legend smaller
+#legend("topleft", legend=levels(Group), pch=pch, col=colors, ncol=2)
+
+
+#extract out the coordinates of the plot
+mds_plot <- plotMDS(counts, main = "MDS plot: All Geno x All DAF")
+df <- data.frame(mds_plot$x, mds_plot$y)
+
+
+#dev.off()
+
+```
+
+
+Estmate dispersion
+```{r}
+
+#NOTE: square root of your common dispersion value gives you the biological coefficient of variation
+#Typically, the lower your BCV, the more DE genes you will be able to detect
+
+#estimate NB dispersion
+counts <- estimateDisp(counts, design, robust=TRUE)
+counts$common.dispersion
+
+#common dispersion:0.06088962
+#BCV: 0.2468
+
+#view dispersion estimates
+#pdf(file = "/Users/mlemery/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/Genewise_dispersion_estimates_DAF_8_CRU_vs_Col0.pdf", width = 7, height = 7)
+
+#png("test.png")
+
+plotBCV(counts,
+        main = "Biological coefficient of variation")
+par(cex.axis =0.6, cex.lab = 0.6, cex.main = 1)
+
+#dev.off()
+
+
+```
+
+
+```{r}
+fit <- glmQLFit(counts, design)
+plotQLDisp(fit)
+
+```
+
+Comparsions: 
+
+**COMP 1.** Within each respective gentoype, ANY genes that changes across development?
+(ex: Col0 8DAF vs Col0 10DAF)
+
+**COMP 2.** At each timepoint, compare the wildtype (Col0) with each mutant (CRU and RNAi) 
+(ex: Col0 8DAF vs CRU 8DAF)
+
+**COMP 3.** Across all timepoints, compare the wildtype (Col0) with each mutant (CRU and RNAi)
+(ex: Col0 8-22 DAF vs CRU 8-22 DAF)
+
+
+*COMP1
+
+Within *Col0 gentoype, ANY genes that change across development
+(Col0 8 DAF used as reference)
+```{r}
+#--Col0---------------------------------------------------------------------#
+#specify contrasts
+my.contrasts <- makeContrasts(
+  Col0.8vs10 = Col0.8-Col0.10,
+  Col0.8vs12 = Col0.8-Col0.12,
+  Col0.8vs14 = Col0.8-Col0.14,
+  Col0.8vs16 = Col0.8-Col0.16,
+  Col0.8vs18 = Col0.8-Col0.18,
+  Col0.8vs20 = Col0.8-Col0.20,
+  Col0.8vs22 = Col0.8-Col0.22,
+  #CRUvsCol0.8 = (CRU.8-CRU.22)-(Col0.8-Col0.22),
+  levels=design)
+
+
+#--Col0.8vs10 -----------------------------------------------------
+Col0.8vs10 <- glmQLFTest(fit, contrast=my.contrasts[,"Col0.8vs10"])
+
+topTags(Col0.8vs10)
+
+summary(decideTests(Col0.8vs10))
+
+FDR <- p.adjust(Col0.8vs10$table$PValue, method="BH")
+sum(FDR < 0.05)
+#3243 genes
+
+#Output DE genes
+#write.csv(topTags(Col0.8vs10, n=nrow(Col0.8vs10$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_Col_8vs22DAF.csv")
+
+
+#--Col0.8vs12 -----------------------------------------------------
+Col0.8vs12 <- glmQLFTest(fit, contrast=my.contrasts[,"Col0.8vs12"])
+
+topTags(Col0.8vs12)
+
+summary(decideTests(Col0.8vs12))
+
+FDR <- p.adjust(Col0.8vs12$table$PValue, method="BH")
+sum(FDR < 0.05)
+#10884 genes
+
+#Output DE genes
+#write.csv(topTags(Col0.8vs12, n=nrow(Col0.8vs12$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_Col0.8vs12DAF.csv")
+
+
+#--Col0.8vs14 -----------------------------------------------------
+Col0.8vs14 <- glmQLFTest(fit, contrast=my.contrasts[,"Col0.8vs14"])
+
+topTags(Col0.8vs14)
+
+summary(decideTests(Col0.8vs14))
+
+FDR <- p.adjust(Col0.8vs14$table$PValue, method="BH")
+sum(FDR < 0.05)
+#13404 genes
+
+#Output DE genes
+#write.csv(topTags(Col0.8vs14, n=nrow(Col0.8vs14$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_Col0.8vs14DAF.csv")
+
+
+#--Col0.8vs16 -----------------------------------------------------
+Col0.8vs16 <- glmQLFTest(fit, contrast=my.contrasts[,"Col0.8vs16"])
+
+topTags(Col0.8vs16)
+
+summary(decideTests(Col0.8vs16))
+
+FDR <- p.adjust(Col0.8vs16$table$PValue, method="BH")
+sum(FDR < 0.05)
+#14779 genes
+
+#Output DE genes
+#write.csv(topTags(Col0.8vs16, n=nrow(Col0.8vs16$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_Col0.8vs16DAF.csv")
+
+
+#--Col0.8vs18 -----------------------------------------------------
+Col0.8vs18 <- glmQLFTest(fit, contrast=my.contrasts[,"Col0.8vs18"])
+
+topTags(Col0.8vs18)
+
+summary(decideTests(Col0.8vs18))
+
+FDR <- p.adjust(Col0.8vs18$table$PValue, method="BH")
+sum(FDR < 0.05)
+#15391 genes
+
+#Output DE genes
+#write.csv(topTags(Col0.8vs18, n=nrow(Col0.8vs18$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_Col0.8vs18DAF.csv")
+
+
+#--Col0.8vs20 -----------------------------------------------------
+Col0.8vs20 <- glmQLFTest(fit, contrast=my.contrasts[,"Col0.8vs20"])
+
+topTags(Col0.8vs20)
+
+summary(decideTests(Col0.8vs20))
+
+FDR <- p.adjust(Col0.8vs20$table$PValue, method="BH")
+sum(FDR < 0.05)
+#16486 genes
+
+#Output DE genes
+#write.csv(topTags(Col0.8vs20, n=nrow(Col0.8vs20$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_Col0.8vs20DAF.csv")
+
+
+
+#--Col0.8vs22 -----------------------------------------------------
+Col0.8vs22 <- glmQLFTest(fit, contrast=my.contrasts[,"Col0.8vs22"])
+
+topTags(Col0.8vs22)
+
+summary(decideTests(Col0.8vs22))
+
+FDR <- p.adjust(Col0.8vs22$table$PValue, method="BH")
+sum(FDR < 0.05)
+#17873 genes
+
+#Output DE genes
+#write.csv(topTags(Col0.8vs22, n=nrow(Col0.8vs22$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_Col0.8vs22DAF.csv")
+
+
+
+
+```
+
+
+Within *CRU gentoype, ANY genes that change across development
+(CRU 8 DAF used as reference)
+```{r}
+#--CRU---------------------------------------------------------------------#
+#specify contrasts
+CRU.contrasts <- makeContrasts(
+  CRU.8vs10 = CRU.8-CRU.10,
+  CRU.8vs12 = CRU.8-CRU.12,
+  CRU.8vs14 = CRU.8-CRU.14,
+  CRU.8vs16 = CRU.8-CRU.16,
+  CRU.8vs18 = CRU.8-CRU.18,
+  CRU.8vs20 = CRU.8-CRU.20,
+  CRU.8vs22 = CRU.8-CRU.22,
+  levels=design)
+
+
+#--CRU.8vs10 -----------------------------------------------------
+CRU.8vs10 <- glmQLFTest(fit, contrast=CRU.contrasts[,"CRU.8vs10"])
+
+topTags(CRU.8vs10)
+
+summary(decideTests(CRU.8vs10))
+
+FDR <- p.adjust(CRU.8vs10$table$PValue, method="BH")
+sum(FDR < 0.05)
+#5135 genes
+
+#Output DE genes
+#write.csv(topTags(CRU.8vs10, n=nrow(CRU.8vs10$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_CRU.8vs10DAF.csv")
+
+
+#--CRU.8vs12 -----------------------------------------------------
+CRU.8vs12 <- glmQLFTest(fit, contrast=CRU.contrasts[,"CRU.8vs12"])
+
+topTags(CRU.8vs12)
+
+summary(decideTests(CRU.8vs12))
+
+FDR <- p.adjust(CRU.8vs12$table$PValue, method="BH")
+sum(FDR < 0.05)
+#11663 genes
+
+#Output DE genes
+#write.csv(topTags(CRU.8vs12, n=nrow(CRU.8vs12$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_CRU.8vs12DAF.csv")
+
+
+#--CRU.8vs14 -----------------------------------------------------
+CRU.8vs14 <- glmQLFTest(fit, contrast=CRU.contrasts[,"CRU.8vs14"])
+
+topTags(CRU.8vs14)
+
+summary(decideTests(CRU.8vs14))
+
+FDR <- p.adjust(CRU.8vs14$table$PValue, method="BH")
+sum(FDR < 0.05)
+#13583 genes
+
+#Output DE genes
+#write.csv(topTags(CRU.8vs14, n=nrow(CRU.8vs14$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_CRU.8vs14DAF.csv")
+
+
+#--CRU.8vs16 -----------------------------------------------------
+CRU.8vs16 <- glmQLFTest(fit, contrast=CRU.contrasts[,"CRU.8vs16"])
+
+topTags(CRU.8vs16)
+
+summary(decideTests(CRU.8vs16))
+
+FDR <- p.adjust(CRU.8vs16$table$PValue, method="BH")
+sum(FDR < 0.05)
+#14572 genes
+
+#Output DE genes
+#write.csv(topTags(CRU.8vs16, n=nrow(CRU.8vs16$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_CRU.8vs16DAF.csv")
+
+
+#--CRU.8vs18 -----------------------------------------------------
+CRU.8vs18 <- glmQLFTest(fit, contrast=CRU.contrasts[,"CRU.8vs18"])
+
+topTags(CRU.8vs18)
+
+summary(decideTests(CRU.8vs18))
+
+FDR <- p.adjust(CRU.8vs18$table$PValue, method="BH")
+sum(FDR < 0.05)
+#16435 genes
+
+#Output DE genes
+#write.csv(topTags(CRU.8vs18, n=nrow(CRU.8vs18$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_CRU.8vs18DAF.csv")
+
+
+#--CRU.8vs20 -----------------------------------------------------
+CRU.8vs20 <- glmQLFTest(fit, contrast=CRU.contrasts[,"CRU.8vs20"])
+
+topTags(CRU.8vs20)
+
+summary(decideTests(CRU.8vs20))
+
+FDR <- p.adjust(CRU.8vs20$table$PValue, method="BH")
+sum(FDR < 0.05)
+#17209 genes
+
+#Output DE genes
+#write.csv(topTags(CRU.8vs20, n=nrow(CRU.8vs20$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_CRU.8vs20DAF.csv")
+
+
+#--CRU.8vs22 -----------------------------------------------------
+CRU.8vs22 <- glmQLFTest(fit, contrast=CRU.contrasts[,"CRU.8vs22"])
+
+topTags(CRU.8vs22)
+
+summary(decideTests(CRU.8vs22))
+
+FDR <- p.adjust(CRU.8vs22$table$PValue, method="BH")
+sum(FDR < 0.05)
+#17885 genes
+
+#Output DE genes
+#write.csv(topTags(CRU.8vs22, n=nrow(CRU.8vs22$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_CRU.8vs22DAF.csv")
+
+
+```
+
+
+Within *RNAi gentoype, ANY genes that change across development
+(RNAi 8 DAF used as reference)
+```{r}
+#--RNAi---------------------------------------------------------------------#
+#specify contrasts
+RNAi.contrasts <- makeContrasts(
+  RNAi.8vs10 = RNAi.8-RNAi.10,
+  RNAi.8vs12 = RNAi.8-RNAi.12,
+  RNAi.8vs14 = RNAi.8-RNAi.14,
+  RNAi.8vs16 = RNAi.8-RNAi.16,
+  RNAi.8vs18 = RNAi.8-RNAi.18,
+  RNAi.8vs20 = RNAi.8-RNAi.20,
+  RNAi.8vs22 = RNAi.8-RNAi.22,
+  levels=design)
+
+
+#--RNAi.8vs10 -----------------------------------------------------
+RNAi.8vs10 <- glmQLFTest(fit, contrast=RNAi.contrasts[,"RNAi.8vs10"])
+
+topTags(RNAi.8vs10)
+
+summary(decideTests(RNAi.8vs10))
+
+FDR <- p.adjust(RNAi.8vs10$table$PValue, method="BH")
+sum(FDR < 0.05)
+#4126 genes
+
+#Output DE genes
+#write.csv(topTags(RNAi.8vs10, n=nrow(RNAi.8vs10$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_RNAi.8vs10DAF.csv")
+
+
+#--RNAi.8vs12 -----------------------------------------------------
+RNAi.8vs12 <- glmQLFTest(fit, contrast=RNAi.contrasts[,"RNAi.8vs12"])
+
+topTags(RNAi.8vs12)
+
+summary(decideTests(RNAi.8vs12))
+
+FDR <- p.adjust(RNAi.8vs12$table$PValue, method="BH")
+sum(FDR < 0.05)
+#11106 genes
+
+#Output DE genes
+#write.csv(topTags(RNAi.8vs12, n=nrow(RNAi.8vs12$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_RNAi.8vs12DAF.csv")
+
+
+#--RNAi.8vs14 -----------------------------------------------------
+RNAi.8vs14 <- glmQLFTest(fit, contrast=RNAi.contrasts[,"RNAi.8vs14"])
+
+topTags(RNAi.8vs14)
+
+summary(decideTests(RNAi.8vs14))
+
+FDR <- p.adjust(RNAi.8vs14$table$PValue, method="BH")
+sum(FDR < 0.05)
+#13266 genes
+
+#Output DE genes
+#write.csv(topTags(RNAi.8vs14, n=nrow(RNAi.8vs14$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_RNAi.8vs14DAF.csv")
+
+
+#--RNAi.8vs16 -----------------------------------------------------
+RNAi.8vs16 <- glmQLFTest(fit, contrast=RNAi.contrasts[,"RNAi.8vs16"])
+
+topTags(RNAi.8vs16)
+
+summary(decideTests(RNAi.8vs16))
+
+FDR <- p.adjust(RNAi.8vs16$table$PValue, method="BH")
+sum(FDR < 0.05)
+#14672 genes
+
+#Output DE genes
+#write.csv(topTags(RNAi.8vs16, n=nrow(RNAi.8vs16$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_RNAi.8vs16DAF.csv")
+
+
+#--RNAi.8vs18 -----------------------------------------------------
+RNAi.8vs18 <- glmQLFTest(fit, contrast=RNAi.contrasts[,"RNAi.8vs18"])
+
+topTags(RNAi.8vs18)
+
+summary(decideTests(RNAi.8vs18))
+
+FDR <- p.adjust(RNAi.8vs18$table$PValue, method="BH")
+sum(FDR < 0.05)
+#16104 genes
+
+#Output DE genes
+#write.csv(topTags(RNAi.8vs18, n=nrow(RNAi.8vs18$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_RNAi.8vs18DAF.csv")
+
+
+
+#--RNAi.8vs20 -----------------------------------------------------
+RNAi.8vs20 <- glmQLFTest(fit, contrast=RNAi.contrasts[,"RNAi.8vs20"])
+
+topTags(RNAi.8vs20)
+
+summary(decideTests(RNAi.8vs20))
+
+FDR <- p.adjust(RNAi.8vs20$table$PValue, method="BH")
+sum(FDR < 0.05)
+#17063 genes
+
+#Output DE genes
+#write.csv(topTags(RNAi.8vs20, n=nrow(RNAi.8vs20$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_RNAi.8vs20DAF.csv")
+
+
+#--RNAi.8vs22 -----------------------------------------------------
+RNAi.8vs22 <- glmQLFTest(fit, contrast=RNAi.contrasts[,"RNAi.8vs22"])
+
+topTags(RNAi.8vs22)
+
+summary(decideTests(RNAi.8vs22))
+
+FDR <- p.adjust(RNAi.8vs22$table$PValue, method="BH")
+sum(FDR < 0.05)
+#17869 genes
+
+#Output DE genes
+#write.csv(topTags(RNAi.8vs22, n=nrow(RNAi.8vs22$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/differential_genes_RNAi.8vs22DAF.csv")
+
+```
+
+
+Looking across all timepoints at once (for Col0 gentoype).
+```{r}
+#to test for genes that are DE for any time point compared to 8DAF for Col-0
+#test multiple contrasts for each timepoint versus 8DAF in one go
+Col8_vs_all <- glmQLFTest(fit, contrast=my.contrasts)
+
+summary(decideTests(Col8_vs_all))
+#NotSig   555
+#Sig      22133
+
+FDR <- p.adjust(Col8_vs_all$table$PValue, method="BH")
+sum(FDR < 0.05)
+
+#save logFC results from all contrasts
+Col8_logFC_contrast <- Col8_vs_all$table
+
+```
+
+
+
+*COMP 2
+At each timepoint, compare the wildtype (Col0) with each mutant (CRU and RNAi) 
+(ex: Col0 8DAF vs CRU 8DAF)
+
+
+At each timepoint, compare the wildtype *Col0 *with each mutant *CRU
+```{r}
+colnames(fit)
+
+#--Col0-vs-CRU--------------------------------------------------------------#
+#specify contrasts
+wt.vs.CRU.contrasts <- makeContrasts(
+  Col0.8vsCRU.8 = Col0.8-CRU.8,
+  Col0.10vsCRU.10 = Col0.10-CRU.10,
+  Col0.12vsCRU.12 = Col0.12-CRU.12,
+  Col0.14vsCRU.14 = Col0.14-CRU.14,
+  Col0.16vsCRU.16 = Col0.16-CRU.16,
+  Col0.18vsCRU.18 = Col0.18-CRU.18,
+  Col0.20vsCRU.20 = Col0.20-CRU.20,
+  Col0.22vsCRU.22 = Col0.22-CRU.22,
+  levels=design)
+
+
+#--Col0.8vsCRU.8 -----------------------------------------------------
+Col0.8vsCRU.8 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.8vsCRU.8"])
+
+topTags(Col0.8vsCRU.8)
+#topTags(Col0.8vsCRU.8,sort.by="logFC")
+
+summary(decideTests(Col0.8vsCRU.8))
+
+FDR <- p.adjust(Col0.8vsCRU.8$table$PValue, method="BH")
+sum(FDR < 0.05)
+#242 genes
+
+#write.csv(topTags(Col0.8vsCRU.8, n=nrow(Col0.8vsCRU.8$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.8vsCRU.8_all.csv")
+
+
+#--Col0.10vsCRU.10 ---------------------------------------------------
+Col0.10vsCRU.10 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.10vsCRU.10"])
+
+topTags(Col0.10vsCRU.10)
+
+summary(decideTests(Col0.10vsCRU.10))
+
+FDR <- p.adjust(Col0.10vsCRU.10$table$PValue, method="BH")
+sum(FDR < 0.05)
+#1 genes
+
+#write.csv(topTags(Col0.10vsCRU.10, n=nrow(Col0.10vsCRU.10$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.10vsCRU.10_all.csv")
+
+#--Col0.12vsCRU.12 ---------------------------------------------------
+Col0.12vsCRU.12 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.12vsCRU.12"])
+
+topTags(Col0.12vsCRU.12)
+
+summary(decideTests(Col0.12vsCRU.12))
+
+FDR <- p.adjust(Col0.12vsCRU.12$table$PValue, method="BH")
+sum(FDR < 0.05)
+#0 genes
+
+#write.csv(topTags(Col0.12vsCRU.12, n=nrow(Col0.12vsCRU.12$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.12vsCRU.12_all.csv")
+
+#--Col0.14vsCRU.14 ---------------------------------------------------
+Col0.14vsCRU.14 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.14vsCRU.14"])
+
+topTags(Col0.14vsCRU.14)
+
+summary(decideTests(Col0.14vsCRU.14))
+
+FDR <- p.adjust(Col0.14vsCRU.14$table$PValue, method="BH")
+sum(FDR < 0.05)
+#5 genes
+
+#write.csv(topTags(Col0.14vsCRU.14, n=nrow(Col0.14vsCRU.14$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.14vsCRU.14_all.csv")
+
+
+#--Col0.16vsCRU.16 ---------------------------------------------------
+Col0.16vsCRU.16 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.16vsCRU.16"])
+
+topTags(Col0.16vsCRU.16)
+
+summary(decideTests(Col0.16vsCRU.16))
+
+FDR <- p.adjust(Col0.16vsCRU.16$table$PValue, method="BH")
+sum(FDR < 0.05)
+#10 genes
+
+#write.csv(topTags(Col0.16vsCRU.16, n=nrow(Col0.16vsCRU.16$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.16vsCRU.16_all.csv")
+
+
+#--Col0.18vsCRU.18 ---------------------------------------------------
+Col0.18vsCRU.18 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.18vsCRU.18"])
+
+topTags(Col0.18vsCRU.18)
+
+summary(decideTests(Col0.18vsCRU.18))
+
+FDR <- p.adjust(Col0.18vsCRU.18$table$PValue, method="BH")
+sum(FDR < 0.05)
+#6495 genes
+
+#write.csv(topTags(Col0.18vsCRU.18, n=nrow(Col0.18vsCRU.18$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.18vsCRU.18_all.csv")
+
+
+
+#--Col0.20vsCRU.20 ---------------------------------------------------
+Col0.20vsCRU.20 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.20vsCRU.20"])
+
+topTags(Col0.20vsCRU.20)
+
+summary(decideTests(Col0.20vsCRU.20))
+
+FDR <- p.adjust(Col0.20vsCRU.20$table$PValue, method="BH")
+sum(FDR < 0.05)
+#5196 genes
+
+#write.csv(topTags(Col0.20vsCRU.20, n=nrow(Col0.20vsCRU.20$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.20vsCRU.20_all.csv")
+
+
+
+#--Col0.22vsCRU.22 ---------------------------------------------------
+Col0.22vsCRU.22 <- glmQLFTest(fit, contrast=wt.vs.CRU.contrasts[,"Col0.22vsCRU.22"])
+
+topTags(Col0.22vsCRU.22)
+
+summary(decideTests(Col0.22vsCRU.22))
+
+FDR <- p.adjust(Col0.22vsCRU.22$table$PValue, method="BH")
+sum(FDR < 0.05)
+#1 genes
+
+#write.csv(topTags(Col0.22vsCRU.22, n=nrow(Col0.22vsCRU.22$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.22vsCRU.22_all.csv")
+
+```
+
+
+At each timepoint, compare the wildtype *Col0 *with each mutant *RNAi
+```{r}
+#--Col0-vs-RNAi--------------------------------------------------------------#
+#specify contrasts
+wt.vs.RNAi.contrasts <- makeContrasts(
+  Col0.8vsRNAi.8 = Col0.8-RNAi.8,
+  Col0.10vsRNAi.10 = Col0.10-RNAi.10,
+  Col0.12vsRNAi.12 = Col0.12-RNAi.12,
+  Col0.14vsRNAi.14 = Col0.14-RNAi.14,
+  Col0.16vsRNAi.16 = Col0.16-RNAi.16,
+  Col0.18vsRNAi.18 = Col0.18-RNAi.18,
+  Col0.20vsRNAi.20 = Col0.20-RNAi.20,
+  Col0.22vsRNAi.22 = Col0.22-RNAi.22,
+  levels=design)
+
+
+#--Col0.8vsRNAi.8 ---------------------------------------------------
+Col0.8vsRNAi.8 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.8vsRNAi.8"])
+
+topTags(Col0.8vsRNAi.8)
+
+summary(decideTests(Col0.8vsRNAi.8))
+
+FDR <- p.adjust(Col0.8vsRNAi.8$table$PValue, method="BH")
+sum(FDR < 0.05)
+#72 genes
+
+#write.csv(topTags(Col0.8vsRNAi.8, n=nrow(Col0.8vsRNAi.8$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.8vsRNAi.8_all.csv")
+
+
+#--Col0.10vsRNAi.10 ---------------------------------------------------
+Col0.10vsRNAi.10 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.10vsRNAi.10"])
+
+topTags(Col0.10vsRNAi.10)
+
+summary(decideTests(Col0.10vsRNAi.10))
+
+FDR <- p.adjust(Col0.10vsRNAi.10$table$PValue, method="BH")
+sum(FDR < 0.05)
+#1 genes
+
+#write.csv(topTags(Col0.10vsRNAi.10, n=nrow(Col0.10vsRNAi.10$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.10vsRNAi.10_all.csv")
+
+
+#--Col0.12vsRNAi.12 ---------------------------------------------------
+Col0.12vsRNAi.12 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.12vsRNAi.12"])
+
+topTags(Col0.12vsRNAi.12)
+
+summary(decideTests(Col0.12vsRNAi.12))
+
+FDR <- p.adjust(Col0.12vsRNAi.12$table$PValue, method="BH")
+sum(FDR < 0.05)
+#0 genes
+
+#write.csv(topTags(Col0.12vsRNAi.12, n=nrow(Col0.12vsRNAi.12$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.12vsRNAi.12_all.csv")
+
+
+#--Col0.14vsRNAi.14 ---------------------------------------------------
+Col0.14vsRNAi.14 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.14vsRNAi.14"])
+
+topTags(Col0.14vsRNAi.14)
+
+summary(decideTests(Col0.14vsRNAi.14))
+
+FDR <- p.adjust(Col0.14vsRNAi.14$table$PValue, method="BH")
+sum(FDR < 0.05)
+#2 genes
+
+#write.csv(topTags(Col0.14vsRNAi.14, n=nrow(Col0.14vsRNAi.14$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.14vsRNAi.14_all.csv")
+
+
+#--Col0.16vsRNAi.16 ---------------------------------------------------
+Col0.14vsRNAi.14 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.16vsRNAi.16"])
+
+topTags(Col0.16vsRNAi.16)
+
+summary(decideTests(Col0.16vsRNAi.16))
+
+FDR <- p.adjust(Col0.16vsRNAi.16$table$PValue, method="BH")
+sum(FDR < 0.05)
+#4 genes
+
+#write.csv(topTags(Col0.14vsRNAi.14, n=nrow(Col0.14vsRNAi.14$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.16vsRNAi.16_all.csv")
+
+
+
+#--Col0.18vsRNAi.18 ---------------------------------------------------
+Col0.18vsRNAi.18 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.18vsRNAi.18"])
+
+topTags(Col0.18vsRNAi.18)
+
+summary(decideTests(Col0.18vsRNAi.18))
+
+FDR <- p.adjust(Col0.18vsRNAi.18$table$PValue, method="BH")
+sum(FDR < 0.05)
+#1602 genes
+
+#write.csv(topTags(Col0.18vsRNAi.18, n=nrow(Col0.18vsRNAi.18$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.18vsRNAi.18_all.csv")
+
+
+
+#--Col0.20vsRNAi.20 ---------------------------------------------------
+Col0.20vsRNAi.20 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.20vsRNAi.20"])
+
+topTags(Col0.20vsRNAi.20)
+
+summary(decideTests(Col0.20vsRNAi.20))
+
+FDR <- p.adjust(Col0.20vsRNAi.20$table$PValue, method="BH")
+sum(FDR < 0.05)
+#2871 genes
+
+#write.csv(topTags(Col0.20vsRNAi.20, n=nrow(Col0.20vsRNAi.20$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.20vsRNAi.20_all.csv")
+
+
+#--Col0.22vsRNAi.22 ---------------------------------------------------
+Col0.22vsRNAi.22 <- glmQLFTest(fit, contrast=wt.vs.RNAi.contrasts[,"Col0.22vsRNAi.22"])
+
+topTags(Col0.22vsRNAi.22)
+
+summary(decideTests(Col0.22vsRNAi.22))
+
+FDR <- p.adjust(Col0.22vsRNAi.22$table$PValue, method="BH")
+sum(FDR < 0.05)
+#0 genes
+
+#write.csv(topTags(Col0.22vsRNAi.22, n=nrow(Col0.22vsRNAi.22$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0.22vsRNAi.22_all.csv")
+
+```
+
+
+COMP 3. Across all timepoints, compare the wildtype (*Col0) with each mutant (*CRU and *RNAi)
+
+```{r}
+
+#treat each time point as a 'block', looking for consistent genotypic differences for the pairwise comparisons
+# https://f1000research.com/articles/5-1408
+design2 <- model.matrix(~0+Genotype+DAF)
+colnames(design2) <- gsub("Genotype", "", colnames(design2))
+design2
+
+contr.matrix2 <- makeContrasts(
+  Col0vsCRU = Col0-CRU,
+  Col0vsRNAi = Col0-RNAi,
+  levels = colnames(design2)
+)
+
+contr.matrix2
+
+fit2 <- glmQLFit(counts, design2)
+plotQLDisp(fit2)
+
+
+
+##Check???
+#--Col0-vs-CRU---------------------------------------------------
+Col0vsCRU <- glmQLFTest(fit2, contrast=contr.matrix2[,"Col0vsCRU"])
+
+topTags(Col0vsCRU)
+
+summary(decideTests(Col0vsCRU))
+
+FDR <- p.adjust(Col0vsCRU$table$PValue, method="BH")
+sum(FDR < 0.05)
+#2800 genes
+
+#write.csv(topTags(Col0vsCRU, n=nrow(Col0vsCRU$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0vsCRU_all.csv")
+
+
+
+#--Col0-vs-RNAi---------------------------------------------------
+Col0vsRNAi <- glmQLFTest(fit2, contrast=contr.matrix2[,"Col0vsRNAi"])
+
+topTags(Col0vsRNAi)
+
+summary(decideTests(Col0vsRNAi))
+
+FDR <- p.adjust(Col0vsRNAi$table$PValue, method="BH")
+sum(FDR < 0.05)
+#329 genes
+
+#write.csv(topTags(Col0vsRNAi, n=nrow(Col0vsRNAi$tables)), file= "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/differential_genes_Col0vsRNAi_all.csv")
+
+
+
+
+#colnames(fit)
+#Col0 vs CRU??
+#---> is this a correct way to do this?
+#qlf3 <- glmQLFTest(fit, contrast=c(1,1,1,1,1,1,1,1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,0,0,0))
+#topTags(qlf3)
+
+#FDR3 <- p.adjust(qlf3$table$PValue, method="BH")
+#sum(FDR3 < 0.05)
+#3729 genes
+
+#summary(decideTests(qlf3))
+
+```
+
+
+Median-centered log2 transformed
+```{r}
+library(matrixStats)
+
+#Import data, create design matrix, and filter before this section
+
+# filtering BEFORE calculating cpm
+keep <- filterByExpr(counts, group = Genotype)
+
+#subset DGEList object to retain only non-filtered genes
+#keep.lib.sizez=FALSE becasue the library size to be recomputed after filtering
+counts <- counts[keep, , keep.lib.sizes=FALSE]
+
+counts
+
+# log2 normalized CPM values
+counts_cpm_log <- as.data.frame(cpm(counts, log=TRUE))
+#write.csv(counts_cpm_log, "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/STAR_out_counts_filtered_cpm_log_reps_11202020.csv", row.names = T)
+
+counts_cpm <- as.data.frame(cpm(counts, log=FALSE))
+#write.csv(counts_cpm, "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/STAR_out_counts_filtered_cpm_reps_11202020.csv", row.names = T)
+
+#test
+#test_cpm <- as.data.frame(head(counts_cpm_log, n=1000))
+
+
+#average across 3 replicates
+counts_cpm_log$Col0_DAF8 <- ((counts_cpm_log$Col0_DAF8_R1 + counts_cpm_log$Col0_DAF8_R2 + counts_cpm_log$Col0_DAF8_R3)/3)
+counts_cpm_log$Col0_DAF10 <- ((counts_cpm_log$Col0_DAF10_R1 + counts_cpm_log$Col0_DAF10_R2 + counts_cpm_log$Col0_DAF10_R3)/3)
+counts_cpm_log$Col0_DAF12 <- ((counts_cpm_log$Col0_DAF12_R1 + counts_cpm_log$Col0_DAF12_R2 + counts_cpm_log$Col0_DAF12_R3)/3)
+counts_cpm_log$Col0_DAF14 <- ((counts_cpm_log$Col0_DAF14_R1 + counts_cpm_log$Col0_DAF14_R2 + counts_cpm_log$Col0_DAF14_R3)/3)
+counts_cpm_log$Col0_DAF16 <- ((counts_cpm_log$Col0_DAF16_R1 + counts_cpm_log$Col0_DAF16_R2 + counts_cpm_log$Col0_DAF16_R3)/3)
+counts_cpm_log$Col0_DAF18 <- ((counts_cpm_log$Col0_DAF18_R1 + counts_cpm_log$Col0_DAF18_R2 + counts_cpm_log$Col0_DAF18_R3)/3)
+counts_cpm_log$Col0_DAF20 <- ((counts_cpm_log$Col0_DAF20_R1 + counts_cpm_log$Col0_DAF20_R2 + counts_cpm_log$Col0_DAF20_R3)/3)
+counts_cpm_log$Col0_DAF22 <- ((counts_cpm_log$Col0_DAF22_R1 + counts_cpm_log$Col0_DAF22_R2 + counts_cpm_log$Col0_DAF22_R3)/3)
+
+counts_cpm_log$CRU_DAF8 <- ((counts_cpm_log$CRU_DAF8_R1 + counts_cpm_log$CRU_DAF8_R2 + counts_cpm_log$CRU_DAF8_R3)/3)
+counts_cpm_log$CRU_DAF10 <- ((counts_cpm_log$CRU_DAF10_R1 + counts_cpm_log$CRU_DAF10_R2 + counts_cpm_log$CRU_DAF10_R3)/3)
+counts_cpm_log$CRU_DAF12 <- ((counts_cpm_log$CRU_DAF12_R1 + counts_cpm_log$CRU_DAF12_R2 + counts_cpm_log$CRU_DAF12_R3)/3)
+counts_cpm_log$CRU_DAF14 <- ((counts_cpm_log$CRU_DAF14_R1 + counts_cpm_log$CRU_DAF14_R2 + counts_cpm_log$CRU_DAF14_R3)/3)
+counts_cpm_log$CRU_DAF16 <- ((counts_cpm_log$CRU_DAF16_R1 + counts_cpm_log$CRU_DAF16_R2 + counts_cpm_log$CRU_DAF16_R3)/3)
+counts_cpm_log$CRU_DAF18 <- ((counts_cpm_log$CRU_DAF18_R1 + counts_cpm_log$CRU_DAF18_R2 + counts_cpm_log$CRU_DAF18_R3)/3)
+counts_cpm_log$CRU_DAF20 <- ((counts_cpm_log$CRU_DAF20_R1 + counts_cpm_log$CRU_DAF20_R2 + counts_cpm_log$CRU_DAF20_R3)/3)
+counts_cpm_log$CRU_DAF22 <- ((counts_cpm_log$CRU_DAF22_R1 + counts_cpm_log$CRU_DAF22_R2 + counts_cpm_log$CRU_DAF22_R3)/3)
+
+
+
+counts_cpm_log$RNAi_DAF8 <- ((counts_cpm_log$RNAi_DAF8_R1 + counts_cpm_log$RNAi_DAF8_R2 + counts_cpm_log$RNAi_DAF8_R3)/3)
+counts_cpm_log$RNAi_DAF10 <- ((counts_cpm_log$RNAi_DAF10_R1 + counts_cpm_log$RNAi_DAF10_R2 + counts_cpm_log$RNAi_DAF10_R3)/3)
+counts_cpm_log$RNAi_DAF12 <- ((counts_cpm_log$RNAi_DAF12_R1 + counts_cpm_log$RNAi_DAF12_R2 + counts_cpm_log$RNAi_DAF12_R3)/3)
+counts_cpm_log$RNAi_DAF14 <- ((counts_cpm_log$RNAi_DAF14_R1 + counts_cpm_log$RNAi_DAF14_R2 + counts_cpm_log$RNAi_DAF14_R3)/3)
+counts_cpm_log$RNAi_DAF16 <- ((counts_cpm_log$RNAi_DAF16_R1 + counts_cpm_log$RNAi_DAF16_R2 + counts_cpm_log$RNAi_DAF16_R3)/3)
+counts_cpm_log$RNAi_DAF18 <- ((counts_cpm_log$RNAi_DAF18_R1 + counts_cpm_log$RNAi_DAF18_R2 + counts_cpm_log$RNAi_DAF18_R3)/3)
+counts_cpm_log$RNAi_DAF20 <- ((counts_cpm_log$RNAi_DAF20_R1 + counts_cpm_log$RNAi_DAF20_R2 + counts_cpm_log$RNAi_DAF20_R3)/3)
+counts_cpm_log$RNAi_DAF22 <- ((counts_cpm_log$RNAi_DAF22_R1 + counts_cpm_log$RNAi_DAF22_R2 + counts_cpm_log$RNAi_DAF22_R3)/3)
+
+#select only averaged columns
+counts_cpm_log_avg <- as.matrix(counts_cpm_log[, 73:ncol(counts_cpm_log)])
+#write.csv(log_cpm_median_centered, "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/STAR_out_counts_filtered_cpm_log_avg_reps_11202020.csv", row.names = T)
+
+#median center (substract the medain value per gene)
+#counts_cpm_log$med <- as.matrix(apply(counts_cpm_log,1, median, na.rm = FALSE))
+
+log_cpm_median_centered <- sweep(counts_cpm_log_avg, MARGIN=1, STATS= rowMedians(counts_cpm_log_avg))
+
+#write.csv(log_cpm_median_centered, "~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/STAR_out_counts_filtered_cpm_log_11202020.csv", row.names = T)
+
+```
+
+
+Heatmap/Kmeans clustering
+```{r}
+#https://github.com/Angelovici-Lab/BioTools
+
+km.res <- read.csv("~/Desktop/Ath_1001/SSP_Developmental/results/RNAseq/edgeR_DGE_analysis/clustering_11172020/trans_cts_cluster.csv")
+
+# Visualize kmeans clustering
+# use repel = TRUE to avoid overplotting
+fviz_cluster(km.res, iris[, -5], frame.type = "norm")
+
+
+# vary parameters for most readable graph
+library(cluster)
+clusplot(mydata, fit$cluster, color=TRUE, shade=TRUE,
+   labels=2, lines=0)
+
+
+
+```
+
+
+
+Volcano plots
+```{r}
+#Plot the genes are DE:
+isDE <- as.logical(de)
+
+DEnames <- rownames(counts) [isDE]
+
+pdf(file = "DE_genes_cult_398_WW_vs_S1.pdf")
+
+plotSmear(counts, de.tags = DEnames,
+          main = "Log fold change of expression level in Cultivar 398: WW vs. S1")
+abline(h=c(-1, 1), col="blue")
+par(cex.axis =0.6, cex.lab = 0.6, cex.main = 1)
+
+dev.off()
+```
+
